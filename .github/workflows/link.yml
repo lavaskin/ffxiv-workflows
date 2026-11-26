@@ -1,0 +1,14 @@
+name: Link ticket
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, edited, synchronize]
+
+permissions: {}
+
+jobs:
+  link:
+    uses: ./.github/workflows/link-ticket.yml
+    secrets:
+      token: ${{ secrets.TICKET_LINK_TOKEN }}

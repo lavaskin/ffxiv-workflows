@@ -1,0 +1,51 @@
+name: Release plan
+description: Says whether a pushed version needs releasing (no vX.Y.Z tag yet), and writes its changelog section as the release's notes.
+
+inputs:
+  version:
+    description: The version pushed, X.Y.Z
+    required: true
+  version-file:
+    description: Where the version is set, named in the error when it isn't X.Y.Z (e.g. "version in package.json")
+    required: true
+  changelog:
+    description: The changelog to read the notes from
+    default: CHANGELOG.md
+
+outputs:
+  release:
+    description: "'true' when vX.Y.Z isn't tagged yet, 'false' when it is"
+    value: ${{ steps.plan.outputs.release }}
+  tag:
+    description: vX.Y.Z
+    value: ${{ steps.plan.outputs.tag }}
+  notes:
+    description: The file holding the version's changelog section, written only when release is 'true'
+    value: ${{ steps.plan.outputs.notes }}
+
+runs:
+  using: composite
+  steps:
+    - name: What to do
+      id: plan
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        VERSION_FILE: ${{ inputs.version-file }}
+        CHANGELOG: ${{ inputs.changelog }}
+        SCRIPTS: ${{ github.action_path }}
+      run: |
+        action=$("$SCRIPTS/release-action.sh" "$VERSION" "$VERSION_FILE")
+        notes="$RUNNER_TEMP/release-notes.md"
+        {
+          echo "tag=v$VERSION"
+          echo "notes=$notes"
+        } >> "$GITHUB_OUTPUT"
+        if [[ $action == none ]]; then
+          echo "::notice::v$VERSION is already tagged: nothing to release"
+          echo "release=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        "$SCRIPTS/changelog-section.sh" "$VERSION" "$CHANGELOG" > "$notes"
+        echo "::notice::Releasing v$VERSION"
+        echo "release=true" >> "$GITHUB_OUTPUT"

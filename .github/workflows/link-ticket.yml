@@ -1,0 +1,104 @@
+name: Link ticket
+
+on:
+  workflow_call:
+    inputs:
+      self-hosted:
+        description: Run on the repo's self-hosted runners rather than GitHub's
+        type: boolean
+        default: false
+    secrets:
+      token:
+        description: A token with Issues read and write on ffxiv-hub, and Pull requests read on the calling repo
+        required: true
+
+permissions: {}
+
+jobs:
+  link:
+    name: Link to ticket
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ inputs.self-hosted && fromJSON('["self-hosted", "linux", "x64"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    concurrency:
+      group: link-ticket-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Link
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          OWNER: ${{ github.repository_owner }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_ID: ${{ github.event.pull_request.node_id }}
+          HUB: ffxiv-hub
+        run: |
+          set -euo pipefail
+          err="$RUNNER_TEMP/gh-error"
+
+          report() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          fail() { echo "::error::$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          gh_error() { sed 's/^gh: //; s/\.$//' "$err"; }
+
+          pattern='^feature/([0-9]+)-.'
+          if [[ ! "$BRANCH" =~ $pattern ]]; then
+            report "Skipped: \`$BRANCH\` isn't named \`feature/<ticket>-<desc>\`, so it has no ticket to link."
+            exit 0
+          fi
+          number=$((10#${BASH_REMATCH[1]}))
+          ticket="$OWNER/$HUB#$number"
+
+          renew="Give the \"ffxiv-actions\" fine-grained token Issues read and write and Pull requests read on $HUB and every repo that calls this workflow, and set it as TICKET_LINK_TOKEN in each of them."
+          if [[ -z "$GH_TOKEN" ]]; then
+            fail "The TICKET_LINK_TOKEN secret isn't set. $renew"
+          fi
+          if ! gh api graphql -f query='{ viewer { login } }' > /dev/null 2> "$err"; then
+            if grep -q 'HTTP 401' "$err"; then
+              fail "GitHub rejected TICKET_LINK_TOKEN as bad credentials: it wasn't saved correctly, or it's expired or been revoked. $renew"
+            fi
+            fail "Couldn't reach GitHub: $(gh_error)"
+          fi
+
+          # shellcheck disable=SC2016 # $owner and the rest are GraphQL variables
+          query='query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issueOrPullRequest(number: $number) {
+                __typename
+                ... on Issue {
+                  id
+                  state
+                  url
+                  closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { nodes { id } }
+                }
+              }
+            }
+          }'
+          if ! found=$(gh api graphql -f query="$query" -f owner="$OWNER" -f repo="$HUB" -F number="$number" \
+              --jq '.data.repository.issueOrPullRequest' 2> "$err"); then
+            fail "Couldn't find $ticket, from the branch name: $(gh_error). Check the branch's ticket number, and that TICKET_LINK_TOKEN covers $HUB."
+          fi
+          if [[ "$(jq -r '.__typename' <<< "$found")" != Issue ]]; then
+            fail "$ticket, from the branch name, is a pull request, not a ticket. Check the branch's ticket number."
+          fi
+          url=$(jq -r '.url' <<< "$found")
+          if [[ "$(jq -r '.state' <<< "$found")" != OPEN ]]; then
+            fail "$ticket, from the branch name, is closed: $url"
+          fi
+          if jq -e --arg pr "$PR_ID" 'any(.closedByPullRequestsReferences.nodes[]; .id == $pr)' <<< "$found" > /dev/null; then
+            report "Already linked to $ticket: $url"
+            exit 0
+          fi
+
+          # shellcheck disable=SC2016 # GraphQL variables, as above
+          mutation='mutation($issue: ID!, $pr: ID!) {
+            addCloseIssueReferences(input: { issueId: $issue, pullRequestIds: [$pr] }) {
+              issue { closedByPullRequestsReferences(first: 100, includeClosedPrs: true) { nodes { id } } }
+            }
+          }'
+          if ! linked=$(gh api graphql -f query="$mutation" -f issue="$(jq -r '.id' <<< "$found")" -f pr="$PR_ID" \
+              --jq '.data.addCloseIssueReferences.issue.closedByPullRequestsReferences.nodes' 2> "$err"); then
+            fail "Couldn't link $ticket: $(gh_error)"
+          fi
+          if ! jq -e --arg pr "$PR_ID" 'any(.[]; .id == $pr)' <<< "$linked" > /dev/null; then
+            fail "GitHub accepted the link to $ticket, but the ticket doesn't list this pull request: $url"
+          fi
+          report "Linked to $ticket: $url"
