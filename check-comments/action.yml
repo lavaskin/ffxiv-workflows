@@ -1,0 +1,11 @@
+name: Check comments
+description: Fails when a file has more code comments than the repo's baseline allows, or fewer without the baseline lowered.
+
+runs:
+  using: composite
+  steps:
+    - name: Check comments
+      shell: bash
+      env:
+        APP: ${{ github.action_path }}/check-comments.cs
+      run: dotnet run --file "$APP" -- check
