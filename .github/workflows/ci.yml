@@ -17,7 +17,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -34,3 +34,11 @@ jobs:
       - name: Test the release plan
         if: ${{ !cancelled() }}
         run: tests/release-plan.sh
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test the comment check
+        if: ${{ !cancelled() }}
+        run: tests/check-comments.sh
